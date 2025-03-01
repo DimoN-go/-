@@ -1,0 +1,128 @@
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# Список для хранения статей
+articles = []
+
+# Токен твоего бота (замени на свой)
+TOKEN = '7794291923:AAEzXqHw6A_3UNii9REDdFcD-Rlt5AOU0-U'
+# ID канала (замени на свой)
+CHANNEL_ID = '@forelnagav'
+
+# Клавиатуры
+def get_main_keyboard():
+    keyboard = [[InlineKeyboardButton("Начать работу", callback_data='start_working')]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_working_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("Посмотреть время", callback_data='check_time')],
+        [InlineKeyboardButton("Продолжить выкладывать статьи", callback_data='add_article')],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# Обработчик /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! Нажми 'Начать работу', чтобы приступить.",
+        reply_markup=get_main_keyboard()
+    )
+
+# Обработчик кнопок
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'start_working':
+        # Сохраняем chat_id в bot_data при старте работы
+        context.bot_data['chat_id'] = query.message.chat_id
+        await query.edit_message_text(
+            "Отлично! Теперь можешь скидывать статьи (медиа с подписью). Они будут отправляться в канал каждые 1.5 часа.",
+            reply_markup=get_working_keyboard()
+        )
+    elif query.data == 'check_time':
+        remaining_time = len(articles) * 1.5  # Время в часах (1.5 часа на статью)
+        await query.edit_message_text(
+            f"Оставшееся время: {remaining_time} часов",
+            reply_markup=get_working_keyboard()
+        )
+    elif query.data == 'add_article':
+        await query.edit_message_text(
+            "Скинь следующую статью (медиа с подписью).",
+            reply_markup=get_working_keyboard()
+        )
+
+# Обработчик медиа
+async def handle_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    article_number = len(articles) + 1
+
+    if message.photo:
+        media = message.photo[-1].file_id
+        caption = message.caption or ""
+        articles.append({"type": "photo", "media": media, "caption": caption})
+    elif message.video:
+        media = message.video.file_id
+        caption = message.caption or ""
+        articles.append({"type": "video", "media": media, "caption": caption})
+    elif message.document:
+        media = message.document.file_id
+        caption = message.caption or ""
+        articles.append({"type": "document", "media": media, "caption": caption})
+    else:
+        await message.reply_text("Отправь медиа (фото, видео, документ) с подписью!")
+        return
+
+    await message.reply_text(
+        f"Статья #{article_number} добавлена в список! Можешь отправить следующую.",
+        reply_markup=get_working_keyboard()
+    )
+
+# Обработчик команды удаления (если пользователь отправляет "0")
+async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message.text == "0" and articles:  # Если отправлено "0" и список не пуст
+        deleted_article = articles.pop(-1)  # Удаляем последнюю добавленную статью
+        await message.reply_text(
+            f"Последняя статья удалена из списка!",
+            reply_markup=get_working_keyboard()
+        )
+    elif message.text == "0" and not articles:
+        await message.reply_text("Список статей пуст, удалять нечего!")
+
+# Отправка статей в канал каждые 1.5 часа
+async def send_articles(context: ContextTypes.DEFAULT_TYPE):
+    if articles:
+        article = articles.pop(0)  # Удаляем первую статью из списка
+        if article["type"] == "photo":
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=article["media"], caption=article["caption"])
+        elif article["type"] == "video":
+            await context.bot.send_video(chat_id=CHANNEL_ID, video=article["media"], caption=article["caption"])
+        elif article["type"] == "document":
+            await context.bot.send_document(chat_id=CHANNEL_ID, document=article["media"], caption=article["caption"])
+        # Уведомляем пользователя, используя chat_id из bot_data
+        chat_id = context.bot_data.get('chat_id')
+        if chat_id:
+            await context.bot.send_message(chat_id=chat_id, text="Статья отправлена в канал! Чтобы удалить последнюю добавленную статью, отправь '0'.")
+
+# Главная функция
+def main():
+    application = Application.builder().token(TOKEN).build()
+
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button))
+    # Фильтры для фото, видео и документов
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_article))
+    # Обработчик текста "0" для удаления
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete))
+
+    # Задача отправки каждые 1.5 часа (5400 секунд), без параметра context
+    application.job_queue.run_repeating(send_articles, interval=5400, first=0)
+
+    # Запуск бота
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
